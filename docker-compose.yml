@@ -1,0 +1,84 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    # Each worker opens up to DB_POOL_SIZE + DB_MAX_OVERFLOW connections, so
+    # the default max_connections=100 is not enough once you scale workers:
+    #   replicas x (pool + overflow) + api  <=  max_connections
+    command: postgres -c max_connections=300
+    environment:
+      POSTGRES_USER: events
+      POSTGRES_PASSWORD: events
+      POSTGRES_DB: events
+    ports:
+      # Host-side only, for psql/debugging. Override if 5432 is taken:
+      #   POSTGRES_HOST_PORT=5433 docker compose up
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U events -d events"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    # 7.x, because the queue metrics use the consumer-group `lag` field.
+    image: redis:7-alpine
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+    ports:
+      - "${REDIS_HOST_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    environment:
+      DATABASE_URL: postgresql+asyncpg://events:events@postgres:5432/events
+      REDIS_URL: redis://redis:6379/0
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "${API_HOST_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/live').status==200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  worker:
+    build: .
+    command: python -m app.worker
+    environment:
+      DATABASE_URL: postgresql+asyncpg://events:events@postgres:5432/events
+      REDIS_URL: redis://redis:6379/0
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # CONSUMER_NAME is intentionally unset: it defaults to the container
+      # hostname, which is unique per replica.
+      RATES_FAILURE_RATE: ${RATES_FAILURE_RATE:-0.0}
+    ports:
+      # A range, so `--scale worker=N` can bind one host port per replica.
+      - "9100-9109:9100"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:

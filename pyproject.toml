@@ -1,0 +1,30 @@
+[project]
+name = "transaction-event-service"
+version = "1.0.0"
+description = "Async transaction event ingestion, currency conversion and aggregation service"
+requires-python = ">=3.11"
+readme = "README.md"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+filterwarnings = [
+    "error",
+    # SQLite has no native DECIMAL: SQLAlchemy converts through float and warns.
+    # Verified exact for our scale (see tests/test_dedup.py::test_amounts_round_trip).
+    "ignore:.*does \\*not\\* support Decimal objects natively.*:UserWarning",
+]
+
+[tool.ruff]
+line-length = 95
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "C4", "SIM"]
+ignore = [
+    # Calling Query()/Path()/Body() in a parameter default is how FastAPI
+    # declares request parameters; it is not the mutable-default footgun.
+    "B008",
+]
